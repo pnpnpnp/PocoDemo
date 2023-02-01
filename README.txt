@@ -1,4 +1,4 @@
-要改的地方：
+要修改的地方：
 heroActivityTest.py的activityDict
 config.ini
 auto_setup窗口句柄（getUnityWindowHandle.py可以拿到窗口句柄）
@@ -16,31 +16,70 @@ translateTable
 打印测试结果描述加上具体什么地方错了
 
 相关优化问题：
-关于黑名单： 比较大型的游戏，局内战斗的元素和UI的复杂程度也是很高的，
+比较大型的游戏，局内战斗的元素和UI的复杂程度也是很高的，
 保存一次UI树的信息也有2M以上的数据，而获取时间会随着UI复杂度的上升而上升。
-从最终效果来看，战斗从前期到后期，获取时间会由1秒到4秒逐渐上升，
-这样的速度是不能满足实现业务需求的，因此建议从poco的unitySDK上添加黑名单机制，
-以提高获取UITree的效率。
+从最终效果来看，获取时间会由1秒到4秒逐渐上升，这样的速度是不能满足实现业务需求的，
+因此建议从poco的unitySDK上添加黑名单机制，以提高获取UITree的效率。
 
-建议利用freeze函数： 多次提取会重复的获取UI元素浪费时间，
-目前已经解决这个问题可以只获取一次就提取出所有参数。
-目前较大型游戏因局内战斗UI结构复杂，获取一次UI信息在一秒到三秒内不等。
+黑名单过滤掉Node不需要的属性减少dump出来的json文件大小：
+修改UnityNode.cs的enumerateAttrs接口
+        public override Dictionary<string, object> enumerateAttrs()
+        {
+            Dictionary<string, object> payload = GetPayload();
+            Dictionary<string, object> ret = new Dictionary<string, object>();
+            string blackList = "clickable|text|components|texture|tag|_ilayer|layer|_instanceId";
+            foreach (KeyValuePair<string, object> p in payload)
+            {
+                if (blackList.Contains(p.Key))
+                {
+                    continue;
+/*                     ret.Add(p.Key, p.Value); */
+                }
+                ret.Add(p.Key,p.Value);
+            }
+            return ret;
+        }
+
+黑名单过滤掉不需要的Node减少dump出来的json文件大小：
+修改AbstractDumper.cs的dumpHierarchyImpl接口（注释部分）
+        private Dictionary<string, object> dumpHierarchyImpl(AbstractNode node, bool onlyVisibleNode)
+        {
+            if (node == null)
+            {
+                return null;
+            }
+            Dictionary<string, object> payload = node.enumerateAttrs();
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            string name = (string)node.getAttr("name");
+            result.Add("name", name);
+            result.Add("payload", payload);
+
+            List<object> children = new List<object>();
+            foreach (AbstractNode child in node.getChildren())
+            {
+/* 				string needName = (string)child.getAttr("name");
+				string needLayer = (string)child.getAttr("layer");
+				if (needName != "UI" && needLayer != "UI")
+				{
+					continue;
+				} */
+                if (!onlyVisibleNode || (bool)child.getAttr("visible"))
+                {
+                    children.Add(dumpHierarchyImpl(child, onlyVisibleNode));
+                }
+            }
+            if (children.Count > 0)
+            {
+                result.Add("children", children);
+            }
+            return result;
+        }
+
+利用freeze函数： 多次提取会重复的获取UI元素浪费时间，
 freeze() --获取当前UI树的一个静态副本
-不过这种方法也是有局限性的，那就是如果是频繁切换界面，
+不过这种方法也是有局限性的，如果是频繁切换界面，
 并且在当前界面的操作很少的话，不推荐使用
 
-UI层操作时间问题： 需要避的坑有两个 
-（1）minicap截图：这个要关掉，实际会采用录屏行为，不需要截图。
-截图服务启动会消耗时间且截图本身也消耗性能 
-（2）adb本地socket通信建立：确保一次建立，这是poco click swipe等方式进行指令的必要条件，
-需要提前自己启动起来，让他们时刻保持通信，这样会大大降低单次操作时间。
-现在单次实行操作的时间已经可以控制在最快0.2秒最慢0.8秒。
-
-获取UITree时间问题： 通过观察发现，UITree的获取时间跟界面的复杂程度是正相关的。
-一个比较简单的局外界面可以在0.5秒内就获取完毕，
-而较为复杂的局内战斗就要约2秒多的时间。对于实际操作而言，这样的过程都太长了。
-目前探索出的解决方法有两个：
-（1）利用黑名单，
-（2）只dump一次，更新后的数据不做重新获取，而是采用利用预期结果的数据本地维护。
-
-有关poco的c++层sdk修改文章请尝试自行百度..
+minicap截图：截图服务启动会消耗时间且截图本身也消耗性能
+airtest\core\settings.py
+ST.SAVE_IMAGE = False
